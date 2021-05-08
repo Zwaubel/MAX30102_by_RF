@@ -104,7 +104,7 @@ void rf_heart_rate_and_oxygen_saturation(uint32_t *pun_ir_buffer, int32_t n_ir_b
 
   // Calculate heart rate if periodicity detector was successful. Otherwise, reset peak interval to its initial value and report error.
   if(n_last_peak_interval!=0) {
-    *pn_heart_rate = (int32_t)(FS60/n_last_peak_interval);
+    *pn_heart_rate = (int32_t)(FS_HZ60/n_last_peak_interval);
     *pch_hr_valid  = 1;
   } else {
     n_last_peak_interval=LOWEST_PERIOD;
@@ -299,4 +299,3 @@ float rf_Pcorrelation(float *pn_x, float *pn_y, int32_t n_size)
   r/=n_size;
   return r;
 }
-

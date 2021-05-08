@@ -76,6 +76,7 @@ bool maxim_max30102_write_reg(uint8_t uch_addr, uint8_t uch_data)
 * \retval       true on success
 */
 {
+  Wire.setClock(I2C_BUS_SPEED);
   Wire.beginTransmission(I2C_WRITE_ADDR);
   Wire.write(uch_addr);
   Wire.write(uch_data);
@@ -131,7 +132,7 @@ bool maxim_max30102_init()
     return false;
   if(!maxim_max30102_write_reg(REG_MODE_CONFIG,0x03))   //0x02 for Red only, 0x03 for SpO2 mode 0x07 multimode LED
     return false;
-  if(!maxim_max30102_write_reg(REG_SPO2_CONFIG,0x27))  // SPO2_ADC range = 4096nA, SPO2 sample rate (100 Hz), LED pulseWidth (411uS)
+  if(!maxim_max30102_write_reg(REG_SPO2_CONFIG,0x67))  // SPO2_ADC range = 4096nA (:= 0x20)-> 16384nA := 0x60, SPO2 sample rate (100 Hz), LED pulseWidth (411uS)
     return false;
   
   if(!maxim_max30102_write_reg(REG_LED1_PA,0x24))   //Choose value for ~ 7mA for LED1
@@ -210,4 +211,3 @@ bool maxim_max30102_reset()
     else
         return true;    
 }
-

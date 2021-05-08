@@ -58,7 +58,7 @@
 */
 
 #include "algorithm.h"
-#include "arduino.h"
+#include "Arduino.h"
 
 //#if defined(ARDUINO_AVR_UNO)
 //Arduino Uno doesn't have enough SRAM to store 100 samples of IR led data and red led data in 32-bit format
@@ -315,5 +315,3 @@ void maxim_sort_indices_descend(  int32_t  *pn_x, int32_t *pn_indx, int32_t n_si
     pn_indx[j] = n_temp;
   }
 }
-
-

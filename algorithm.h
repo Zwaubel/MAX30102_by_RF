@@ -61,7 +61,7 @@
 */
 #ifndef ALGORITHM_H_
 #define ALGORITHM_H_
-#include <arduino.h>
+#include <Arduino.h>
 
 #define true 1
 #define false 0
@@ -114,4 +114,3 @@ void maxim_sort_ascend(int32_t  *pn_x, int32_t n_size);
 void maxim_sort_indices_descend(int32_t  *pn_x, int32_t *pn_indx, int32_t n_size);
 
 #endif /* ALGORITHM_H_ */
-
