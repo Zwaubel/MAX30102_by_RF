@@ -52,7 +52,7 @@ void rf_heart_rate_and_oxygen_saturation(uint32_t *pun_ir_buffer, int32_t n_ir_b
   \retval       None
 */
 {
-  int32_t k;
+  uint32_t k;
   static int32_t n_last_peak_interval = LOWEST_PERIOD;
   float f_ir_mean, f_red_mean, f_ir_sumsq, f_red_sumsq;
   float f_y_ac, f_x_ac, xy_ratio;
