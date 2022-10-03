@@ -133,7 +133,7 @@ static const uint8_t SLOT_RED_PILOT =			0x05;
 static const uint8_t SLOT_IR_PILOT = 			0x06;
 static const uint8_t SLOT_GREEN_PILOT = 		0x07;
 
-static const uint8_t MAX_30105_EXPECTEDPARTID = 0x15;
+static const uint8_t MAX3010x_EXPECTEDPARTID = 0x15;
 
 MAX3010x::MAX3010x() {
   // Constructor
@@ -150,7 +150,7 @@ boolean MAX3010x::begin(TwoWire &wirePort, uint32_t i2cSpeed, uint8_t i2caddr) {
 
   // Step 1: Initial Communication and Verification
   // Check that a MAX3010x is connected
-  if (readPartID() != MAX_30105_EXPECTEDPARTID) {
+  if (readPartID() != MAX3010x_EXPECTEDPARTID) {
     // Error -- Part ID read from MAX3010x does not match expected part ID.
     // This may mean there is a physical connectivity problem (broken wire, unpowered, etc).
     return false;
