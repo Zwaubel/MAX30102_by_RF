@@ -34,6 +34,7 @@
   ------------------------------------------------------------------------- */
 
 #define FW_VERSION "0.0.1"
+#define HW_VERSION "0.0.1-ESP32"
 
 #include <Arduino.h>
 #include "algorithm_by_RF.h"
@@ -43,6 +44,7 @@
 //#define DEBUG_INCL_RAW // Uncomment to include raw data in debug output to the Serial stream
 #define SD_CARD_LOGGING // Comment out if you don't have ADALOGGER itself but your MCU still can handle this code
 //#define SAVE_RAW_DATA // Uncomment if you want raw data coming out of the sensor saved to SD card. Red signal first, IR second.
+#define BLE_COMM // disable/enable bluetooth low-energy communication
 
 // Interrupt pin
 #define PIN_OXI_INT         23 // pin connected to MAX30102 INT
@@ -64,10 +66,14 @@ ext::File dataFile;
 bool b_sdCardOk;
 #endif
 
-// battery voltage
-#define PIN_VBAT              35
-#define VBAT_VOLT_DIV_RATIO   2.0
-#define VBAT_ADC_REF_VOLTAGE  3.6
+// battery voltage and capacity
+#define PIN_VBAT                    35
+#define VBAT_VOLT_DIV_RATIO         2.0
+#define VBAT_ADC_REF_MILLI_VOLTAGE  3.6
+#define BAT_LEVEL_UPDATE_MS         10000
+#define VBAT_MIN_MILLI_VOLT         3000
+#define VBAT_MAX_MILLI_VOLT         4200
+uint32_t un_lastBatLevelUpdate = 0; // variables for polling timing
 
 MAX3010x oxi;
 // MAX30102 Config
@@ -86,6 +92,314 @@ uint32_t aun_red_buffer[BUFFER_SIZE];   //red LED sensor data
 float f_oldSpo2 = 0.0;                 // Previous SPO2 value
 uint8_t uch_sdCardDataLines = 0;        // counter for sd card data flushing
 #define SD_DATA_LINE_FLUSH_THRESH 1     // sd card data line threshold to flush data
+
+
+#if defined(BLE_COMM)
+
+#include <esp_wifi.h>
+#include <esp_pm.h>
+//#include <esp_err.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+// BLE advertisement name
+#define BLE_ADVERTISING_NAME "LibreOx ESP32"
+
+// See the following for generating UUIDs:
+// https://www.uuidgenerator.net/
+// Device Info Service
+#define DEVICE_INFO_SERVICE_UUID "0000180A-0000-1000-8000-00805F9B34FB"
+#define DEVICE_INFO_CHAR_MODEL_NR_UUID "00002A24-0000-1000-8000-00805F9B34FB"
+#define DEVICE_INFO_CHAR_SERIAL_NR_UUID "00002A25-0000-1000-8000-00805F9B34FB"
+#define DEVICE_INFO_CHAR_FIRMWARE_REV_UUID "00002A26-0000-1000-8000-00805F9B34FB"
+#define DEVICE_INFO_CHAR_HARDWARE_REV_UUID "00002A27-0000-1000-8000-00805F9B34FB"
+#define DEVICE_INFO_CHAR_MANUFACTURER_UUID "00002A29-0000-1000-8000-00805F9B34FB"
+
+// Nordic UART Service
+#define NORDIC_UART_SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NORDIC_UART_CHAR_RX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NORDIC_UART_CHAR_TX_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+BLECharacteristic* p_bleUartTxCharacteristic = NULL;
+
+// Battery Service
+#define BATTERY_SERVICE_UUID "0000180F-0000-1000-8000-00805F9B34FB"
+#define BATTERY_LEVEL_CHAR_UUID "00002A19-0000-1000-8000-00805F9B34FB"
+BLECharacteristic* p_bleBatCharacteristic = NULL;
+
+// Heart Rate Service
+#define HEART_RATE_SERVICE_UUID "0000180D-0000-1000-8000-00805F9B34FB"
+#define HEART_RATE_MEASUREMENT_CHAR_UUID "00002A37-0000-1000-8000-00805F9B34FB"
+BLECharacteristic* p_bleHeartRateCharacteristic = NULL;
+
+// Blood Oxi Service
+#define PULSE_OXIMETER_SERVICE_UUID "00001822-0000-1000-8000-00805F9B34FB"
+#define PULSE_OXIMETER_CONT_MEAS_CHAR_UUID "00002A5F-0000-1000-8000-00805F9B34FB"
+BLECharacteristic* p_blePulseOxiCharacteristic = NULL;
+
+// BLE Server pointer
+BLEServer * p_bleServer = NULL;
+bool b_bleConnected = false;  // connected flag
+
+class BleServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      b_bleConnected = true;
+#if defined(DEBUG)
+      Serial.println(F("Device connected."));
+#endif
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      b_bleConnected = false;
+      //delay(500); // give the bluetooth stack the chance to get things ready
+      pServer->startAdvertising();
+#if defined(DEBUG)
+      Serial.println(F("Device disconnected. Start advertising."));
+#endif
+    }
+};
+
+class BleUARTCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string rxValue = pCharacteristic->getValue();
+
+#if defined(DEBUG)
+      if (rxValue.length() > 0) {
+        Serial.println(F("*********"));
+        Serial.print(F("Received Value: "));
+
+        for (int i = 0; i < rxValue.length(); i++)
+          Serial.print(rxValue[i]);
+
+        Serial.println();
+        Serial.println(F("*********"));
+      }
+#endif
+    }
+};
+
+void bleInit(void) {
+  // create the BLE Device
+  BLEDevice::init(BLE_ADVERTISING_NAME);
+
+  // set BLE power
+  /**
+    Set the transmission power.
+    The power level can be one of:
+  * * ESP_PWR_LVL_N12 = 0, Corresponding to -12dbm
+  * * ESP_PWR_LVL_N9  = 1, Corresponding to  -9dbm
+  * * ESP_PWR_LVL_N6  = 2, Corresponding to  -6dbm
+  * * ESP_PWR_LVL_N3  = 3, Corresponding to  -3dbm
+  * * ESP_PWR_LVL_N0  = 4, Corresponding to   0dbm
+  * * ESP_PWR_LVL_P3  = 5, Corresponding to  +3dbm
+  * * ESP_PWR_LVL_P6  = 6, Corresponding to  +6dbm
+  * * ESP_PWR_LVL_P9  = 7, Corresponding to  +9dbm
+
+    The power types can be one of:
+  * * ESP_BLE_PWR_TYPE_CONN_HDL0
+  * * ESP_BLE_PWR_TYPE_CONN_HDL1
+  * * ESP_BLE_PWR_TYPE_CONN_HDL2
+  * * ESP_BLE_PWR_TYPE_CONN_HDL3
+  * * ESP_BLE_PWR_TYPE_CONN_HDL4
+  * * ESP_BLE_PWR_TYPE_CONN_HDL5
+  * * ESP_BLE_PWR_TYPE_CONN_HDL6
+  * * ESP_BLE_PWR_TYPE_CONN_HDL7
+  * * ESP_BLE_PWR_TYPE_CONN_HDL8
+  * * ESP_BLE_PWR_TYPE_ADV
+  * * ESP_BLE_PWR_TYPE_SCAN
+  * * ESP_BLE_PWR_TYPE_DEFAULT
+  */
+  BLEDevice::setPower(ESP_PWR_LVL_N12, ESP_BLE_PWR_TYPE_ADV);
+
+  // create the BLE Server
+  p_bleServer = BLEDevice::createServer();
+  p_bleServer->setCallbacks(new BleServerCallbacks());
+
+  // add UART service
+  // bleAddUARTService(p_bleServer);
+
+  // add device info service
+  bleAddDeviceInfoService(p_bleServer);
+
+  // add Battery service
+  bleAddBatteryService(p_bleServer);
+
+  // add Battery service
+  bleAddHeartRateService(p_bleServer);
+
+  // add Battery service
+  bleAddPulseOximeterService(p_bleServer);
+  
+  // Start advertising
+  p_bleServer->getAdvertising()->addServiceUUID(NORDIC_UART_SERVICE_UUID);
+  p_bleServer->startAdvertising();
+
+  // disable WiFi
+  esp_wifi_stop();
+
+  // enable automatic light sleep
+  esp_pm_config_esp32_t pm_config = {
+    .max_freq_mhz = 240,
+    .min_freq_mhz = 80,
+    .light_sleep_enable = true,
+  };
+  //ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+  esp_pm_configure(&pm_config);
+}
+
+void bleAddUARTService(BLEServer* pServer) {
+  // create a BLE service
+  BLEService* p_bleService = pServer->createService(NORDIC_UART_SERVICE_UUID);
+
+  // add BLE UART characteristics to the service;
+  // UART RX
+  BLECharacteristic* p_uartCharacteristic = p_bleService->createCharacteristic(
+        NORDIC_UART_CHAR_RX_UUID,
+        BLECharacteristic::PROPERTY_WRITE
+      );
+  p_uartCharacteristic->setCallbacks(new BleUARTCallbacks());
+
+  // UART TX
+  p_bleUartTxCharacteristic = p_bleService->createCharacteristic(
+                                NORDIC_UART_CHAR_TX_UUID,
+                                BLECharacteristic::PROPERTY_NOTIFY
+                              );
+  p_bleUartTxCharacteristic->addDescriptor(new BLE2902());
+
+  // start the service
+  p_bleService->start();
+}
+
+void bleAddDeviceInfoService(BLEServer* pServer) {
+  // create a BLE service
+  BLEService* p_bleService = pServer->createService(DEVICE_INFO_SERVICE_UUID);
+
+  // add Device Info service
+  BLECharacteristic* p_devInfoCharacteristic = p_bleService->createCharacteristic(
+        DEVICE_INFO_CHAR_MODEL_NR_UUID,
+        BLECharacteristic::PROPERTY_READ
+      );
+  p_devInfoCharacteristic->setValue("LibreOx-ESP32");
+
+  p_devInfoCharacteristic = p_bleService->createCharacteristic(
+                              DEVICE_INFO_CHAR_SERIAL_NR_UUID,
+                              BLECharacteristic::PROPERTY_READ
+                            );
+  p_devInfoCharacteristic->setValue("LibreOx-A-A-0-0-1");
+
+  p_devInfoCharacteristic = p_bleService->createCharacteristic(
+                              DEVICE_INFO_CHAR_FIRMWARE_REV_UUID,
+                              BLECharacteristic::PROPERTY_READ
+                            );
+  p_devInfoCharacteristic->setValue(FW_VERSION);
+
+  p_devInfoCharacteristic = p_bleService->createCharacteristic(
+                              DEVICE_INFO_CHAR_HARDWARE_REV_UUID,
+                              BLECharacteristic::PROPERTY_READ
+                            );
+  p_devInfoCharacteristic->setValue(HW_VERSION);
+
+  p_devInfoCharacteristic = p_bleService->createCharacteristic(
+                              DEVICE_INFO_CHAR_MANUFACTURER_UUID,
+                              BLECharacteristic::PROPERTY_READ
+                            );
+  p_devInfoCharacteristic->setValue("LibreOx-Org");
+
+
+  // start the service
+  p_bleService->start();
+}
+
+void bleAddBatteryService(BLEServer* pServer) {
+  // create a BLE service
+  BLEService* p_bleService = pServer->createService(BATTERY_SERVICE_UUID);
+
+  // add Device Info service
+  p_bleBatCharacteristic = p_bleService->createCharacteristic(
+                             BATTERY_LEVEL_CHAR_UUID,
+                             BLECharacteristic::PROPERTY_READ |
+                             BLECharacteristic::PROPERTY_NOTIFY
+                           );
+  uint8_t uc_batLevel = getRemainingBatCap();
+  p_bleBatCharacteristic->setValue(&uc_batLevel, 1);
+
+  // start the service
+  p_bleService->start();
+}
+
+void bleAddHeartRateService(BLEServer* pServer) {
+  // create a BLE service
+  BLEService* p_bleService = pServer->createService(HEART_RATE_SERVICE_UUID);
+
+  // add Device Info service
+  p_bleHeartRateCharacteristic = p_bleService->createCharacteristic(
+                                   HEART_RATE_MEASUREMENT_CHAR_UUID,
+                                   BLECharacteristic::PROPERTY_READ |
+                                   BLECharacteristic::PROPERTY_NOTIFY
+                                 );
+  uint8_t uc_hr = 0;
+  p_bleHeartRateCharacteristic->setValue(&uc_hr, 1);
+
+  // start the service
+  p_bleService->start();
+}
+
+void bleAddPulseOximeterService(BLEServer* pServer) {
+  // create a BLE service
+  BLEService* p_bleService = pServer->createService(PULSE_OXIMETER_SERVICE_UUID);
+
+  // add Device Info service
+  p_blePulseOxiCharacteristic = p_bleService->createCharacteristic(
+                                  PULSE_OXIMETER_CONT_MEAS_CHAR_UUID,
+                                  BLECharacteristic::PROPERTY_READ |
+                                  BLECharacteristic::PROPERTY_NOTIFY
+                                );
+  blePulseOxiCharWriteValue(0.0);
+
+  // start the service
+  p_bleService->start();
+}
+
+void blePulseOxiCharWriteValue(float f_spo2Val) {
+  uint8_t auc_spo2Val[5];
+  memcpy(auc_spo2Val, &f_spo2Val, sizeof(float));
+  auc_spo2Val[4] = auc_spo2Val[3];
+  auc_spo2Val[3] = auc_spo2Val[2];
+  auc_spo2Val[2] = '.';
+  p_blePulseOxiCharacteristic->setValue(auc_spo2Val, 5);
+}
+
+void bleUartWritePPGData(uint32_t irReading, uint32_t redReading, uint32_t timeStampMillis) {
+#ifdef UART_DATASTYLE_BLUEFRUIT_APP
+  p_bleUartTxCharacteristic->setValue(String(String(irReading) + "," + String(redReading) + "," + String(tRun)).c_str());
+#else
+  uint8_t ble_uart_data[] = {uint8_t((0x00ff0000 & irReading) >> 16), uint8_t((0x0000ff00 & irReading) >> 8), uint8_t(0x000000ff & irReading),
+                             uint8_t((0x00ff0000 & redReading) >> 16), uint8_t((0x0000ff00 & redReading) >> 8), uint8_t(0x000000ff & redReading),
+                             uint8_t((0xff000000 & timeStampMillis) >> 24), uint8_t((0x00ff0000 & timeStampMillis) >> 16), uint8_t((0x0000ff00 & timeStampMillis) >> 8), uint8_t(0x000000ff & timeStampMillis),
+                            };
+  p_bleUartTxCharacteristic->setValue(ble_uart_data, 10);
+#endif
+  p_bleUartTxCharacteristic->notify();
+  // delay is should not be necessary, as the ppg sensor call is blockink and running at 50 Hz
+  delay(12); // bluetooth stack will go into congestion, if too many packets are sent
+}
+
+void bleUartReadData(void) {
+  // implementation needed
+}
+
+void bleWriteBatteryState(void) {
+  uint8_t uc_batLevel = getRemainingBatCap();
+  float f_batVoltage = getBatVolt();
+#if defined(DEBUG)
+  Serial.print(F("Battery level: ")); Serial.println(uc_batLevel);
+  Serial.print(F("Battery voltage: ")); Serial.println(f_batVoltage);
+#endif
+  p_bleBatCharacteristic->setValue(&uc_batLevel, 1);
+}
+
+#endif // BLE_COMM
 
 
 #if defined(SD_CARD_LOGGING)
@@ -114,10 +428,39 @@ void toggleLED(const byte led, bool isOK)
 }
 #endif
 
-float readVBat(void) {
+/**
+   Symmetric sigmoidal approximation
+   https://www.desmos.com/calculator/7m9lu26vpy
+
+   c - c / (1 + k*x/v)^3
+*/
+uint8_t batteryCapSigmoidal(uint16_t voltage, uint16_t minVoltage, uint16_t maxVoltage) {
+  // slow
+  // uint8_t result = 110 - (110 / (1 + pow(1.468 * (voltage - minVoltage)/(maxVoltage - minVoltage), 6)));
+
+  // steep
+  // uint8_t result = 102 - (102 / (1 + pow(1.621 * (voltage - minVoltage)/(maxVoltage - minVoltage), 8.1)));
+
+  // normal
+  uint8_t result = 105 - (105 / (1 + pow(1.724 * (voltage - minVoltage) / (maxVoltage - minVoltage), 5.5)));
+  return result >= 100 ? 100 : result;
+}
+
+/**
+   Asymmetric sigmoidal approximation
+   https://www.desmos.com/calculator/oyhpsu8jnw
+
+   c - c / [1 + (k*x/v)^4.5]^3
+*/
+uint8_t batteryCapAsigmoidal(uint16_t voltage, uint16_t minVoltage, uint16_t maxVoltage) {
+  uint8_t result = 101 - (101 / pow(1 + pow(1.33 * (voltage - minVoltage) / (maxVoltage - minVoltage) , 4.5), 3));
+  return result >= 100 ? 100 : result;
+}
+
+float getBatVolt(void) {
   // float f_vBat = analogRead(PIN_VBAT);
   // f_vBat *= VBAT_VOLT_DIV_RATIO;
-  // f_vBat *= VBAT_ADC_REF_VOLTAGE;
+  // f_vBat *= VBAT_ADC_REF_MILLI_VOLTAGE / 1000.0;
   // f_vBat /= 4096.0;
 
   // this uses a ESP-API function, which "knows" (probably measures) the internal voltage reference better
@@ -125,6 +468,12 @@ float readVBat(void) {
   f_vBat /= 1000.0;
   f_vBat *= VBAT_VOLT_DIV_RATIO;
   return f_vBat;
+}
+
+uint8_t getRemainingBatCap(void) {
+  float f_vBat = getBatVolt();
+  uint8_t uc_batLvl = batteryCapAsigmoidal(uint16_t(f_vBat * 1000), VBAT_MIN_MILLI_VOLT, VBAT_MAX_MILLI_VOLT);
+  return uc_batLvl;
 }
 
 void millis_to_hours(uint32_t un_ms, char* ps_hrStr)
@@ -177,9 +526,9 @@ void setup() {
     }
     else {
 #if defined(DEBUG)
-      Serial.print(" - ");
+      Serial.print(F(" - "));
       Serial.print(i + 1);
-      Serial.println(". MAX30102 connection attempt failed... retrying");
+      Serial.println(F(". MAX30102 connection attempt failed... retrying"));
 #endif
       delay(500);
       if (i + 1 == OXI_CONNECT_RETRIES) {
@@ -192,6 +541,14 @@ void setup() {
       }
     }
   }
+
+#if defined(BLE_COMM)
+  // initialize BLE
+  bleInit();
+#if defined(DEBUG)
+  Serial.println(F(" - BLE communication initialized"));
+#endif
+#endif
 
   // Configure the oximeter
   oxi.softReset();
@@ -275,7 +632,7 @@ void setup() {
   Serial.print(F("SD Card file: "));
   Serial.println(dataFile.name());
   Serial.print(F("VBat: "));
-  Serial.println(readVBat());
+  Serial.println(getBatVolt());
   Serial.println(F("Press any key to start conversion"));
 
   while (Serial.available() == 0) //wait until user presses a key
@@ -383,10 +740,16 @@ void loop() {
 
   // Read the _chip_ temperature in degrees Celsius
   float f_temperature = oxi.readTemperature();
-  float f_voltBat = readVBat();
+  float f_voltBat = getBatVolt();
 
   //save samples and calculation result to SD card
   if (ch_hrValid && ch_spo2Valid) {
+#if defined(BLE_COMM)
+    blePulseOxiCharWriteValue(f_spo2);
+    uint8_t uc_hr = ((uint8_t)n_heartrate);
+    p_bleHeartRateCharacteristic->setValue(&uc_hr, 1);
+#endif
+
 #if defined(SD_CARD_LOGGING)
     ++uch_sdCardDataLines;
     dataFile.print(un_elapsedTime_s, DEC);
@@ -461,4 +824,12 @@ void loop() {
 #endif // DEBUG
     f_oldSpo2 = f_spo2;
   }
+
+#if defined(BLE_COMM)
+  // update the advertised remaining battery capacity
+  if (millis() - un_lastBatLevelUpdate > BAT_LEVEL_UPDATE_MS) {
+    un_lastBatLevelUpdate = millis();
+    bleWriteBatteryState();
+  }
+#endif
 }
