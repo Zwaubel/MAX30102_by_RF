@@ -164,18 +164,20 @@ class BleUARTCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       std::string rxValue = pCharacteristic->getValue();
 
-#if defined(DEBUG)
       if (rxValue.length() > 0) {
+#if defined(DEBUG)
         Serial.println(F("*********"));
         Serial.print(F("Received Value: "));
 
         for (int i = 0; i < rxValue.length(); i++)
           Serial.print(rxValue[i]);
 
-        Serial.println();
         Serial.println(F("*********"));
-      }
 #endif
+        rxValue = "ECHO: " + rxValue + "\n";
+        p_bleUartTxCharacteristic->setValue(rxValue);
+        p_bleUartTxCharacteristic->notify();
+      }
     }
 };
 
@@ -230,9 +232,8 @@ void bleInit(void) {
 
   // add Battery service
   bleAddPulseOximeterService(p_bleServer);
-  
+
   // Start advertising
-  p_bleServer->getAdvertising()->addServiceUUID(NORDIC_UART_SERVICE_UUID);
   p_bleServer->startAdvertising();
 
   // disable WiFi
@@ -251,6 +252,7 @@ void bleInit(void) {
 void bleAddUARTService(BLEServer* pServer) {
   // create a BLE service
   BLEService* p_bleService = pServer->createService(NORDIC_UART_SERVICE_UUID);
+  pServer->getAdvertising()->addServiceUUID(NORDIC_UART_SERVICE_UUID);
 
   // add BLE UART characteristics to the service;
   // UART RX
