@@ -276,6 +276,7 @@ void bleAddUARTService(BLEServer* pServer) {
 void bleAddDeviceInfoService(BLEServer* pServer) {
   // create a BLE service
   BLEService* p_bleService = pServer->createService(DEVICE_INFO_SERVICE_UUID);
+  pServer->getAdvertising()->addServiceUUID(DEVICE_INFO_SERVICE_UUID);
 
   // add Device Info service
   BLECharacteristic* p_devInfoCharacteristic = p_bleService->createCharacteristic(
@@ -316,6 +317,7 @@ void bleAddDeviceInfoService(BLEServer* pServer) {
 void bleAddBatteryService(BLEServer* pServer) {
   // create a BLE service
   BLEService* p_bleService = pServer->createService(BATTERY_SERVICE_UUID);
+  pServer->getAdvertising()->addServiceUUID(BATTERY_SERVICE_UUID);
 
   // add Device Info service
   p_bleBatCharacteristic = p_bleService->createCharacteristic(
