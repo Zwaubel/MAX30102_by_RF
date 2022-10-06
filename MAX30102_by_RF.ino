@@ -219,7 +219,7 @@ void bleInit(void) {
   p_bleServer->setCallbacks(new BleServerCallbacks());
 
   // add UART service
-  // bleAddUARTService(p_bleServer);
+  bleAddUARTService(p_bleServer);
 
   // add device info service
   bleAddDeviceInfoService(p_bleServer);
