@@ -340,8 +340,8 @@ void bleAddHeartRateService(BLEServer* pServer) {
                                    BLECharacteristic::PROPERTY_READ |
                                    BLECharacteristic::PROPERTY_NOTIFY
                                  );
-  uint8_t uc_hr = 0;
-  p_bleHeartRateCharacteristic->setValue(&uc_hr, 1);
+  int32_t n_initHr = 0;
+  p_bleHeartRateCharacteristic->setValue(n_initHr);
 
   // start the service
   p_bleService->start();
@@ -350,6 +350,7 @@ void bleAddHeartRateService(BLEServer* pServer) {
 void bleAddPulseOximeterService(BLEServer* pServer) {
   // create a BLE service
   BLEService* p_bleService = pServer->createService(PULSE_OXIMETER_SERVICE_UUID);
+  pServer->getAdvertising()->addServiceUUID(PULSE_OXIMETER_SERVICE_UUID);
 
   // add Device Info service
   p_blePulseOxiCharacteristic = p_bleService->createCharacteristic(
@@ -357,19 +358,11 @@ void bleAddPulseOximeterService(BLEServer* pServer) {
                                   BLECharacteristic::PROPERTY_READ |
                                   BLECharacteristic::PROPERTY_NOTIFY
                                 );
-  blePulseOxiCharWriteValue(0.0);
+  float f_initSpo2 = 0.0;
+  p_blePulseOxiCharacteristic->setValue(f_initSpo2);
 
   // start the service
   p_bleService->start();
-}
-
-void blePulseOxiCharWriteValue(float f_spo2Val) {
-  uint8_t auc_spo2Val[5];
-  memcpy(auc_spo2Val, &f_spo2Val, sizeof(float));
-  auc_spo2Val[4] = auc_spo2Val[3];
-  auc_spo2Val[3] = auc_spo2Val[2];
-  auc_spo2Val[2] = '.';
-  p_blePulseOxiCharacteristic->setValue(auc_spo2Val, 5);
 }
 
 void bleUartWritePPGData(uint32_t irReading, uint32_t redReading, uint32_t timeStampMillis) {
@@ -747,9 +740,8 @@ void loop() {
   //save samples and calculation result to SD card
   if (ch_hrValid && ch_spo2Valid) {
 #if defined(BLE_COMM)
-    blePulseOxiCharWriteValue(f_spo2);
-    uint8_t uc_hr = ((uint8_t)n_heartrate);
-    p_bleHeartRateCharacteristic->setValue(&uc_hr, 1);
+    p_blePulseOxiCharacteristic->setValue(f_spo2);
+    p_bleHeartRateCharacteristic->setValue(n_heartrate);
 #endif
 
 #if defined(SD_CARD_LOGGING)
