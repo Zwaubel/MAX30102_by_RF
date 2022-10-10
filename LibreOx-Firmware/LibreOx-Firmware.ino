@@ -36,6 +36,8 @@
 #define FW_VERSION "0.0.1"
 #define HW_VERSION "0.0.1-ESP32"
 
+#define MEASUERMENT_DATA_HEADER F("Time[s]\tSpO2\tHR\tTemp[C]\tClock\tRatio\tCorr\tVBat\tBatCap")
+
 #include <Arduino.h>
 #include "algorithm_by_RF.h"
 #include "MAX3010x.h"
@@ -138,6 +140,11 @@ BLECharacteristic* p_bleHeartRateCharacteristic = NULL;
 #define PULSE_OXIMETER_CONT_MEAS_CHAR_UUID "00002A5F-0000-1000-8000-00805F9B34FB"
 BLECharacteristic* p_blePulseOxiCharacteristic = NULL;
 
+// Thermomter Service
+#define THERMOMETER_SERVICE_UUID "00001809-0000-1000-8000-00805F9B34FB"
+#define TEMPERATURE_MEASUREMENT_CHAR_UUID "00002A1C-0000-1000-8000-00805F9B34FB"
+BLECharacteristic* p_bleTemperatureMeasCharacteristic = NULL;
+
 // BLE Server pointer
 BLEServer * p_bleServer = NULL;
 bool b_bleConnected = false;  // connected flag
@@ -227,11 +234,14 @@ void bleInit(void) {
   // add Battery service
   bleAddBatteryService(p_bleServer);
 
-  // add Battery service
+  // add Heart Rate service
   bleAddHeartRateService(p_bleServer);
 
-  // add Battery service
+  // add Pulseoximetry service
   bleAddPulseOximeterService(p_bleServer);
+
+  // add Thermometer Service
+  bleAddThermometerService(p_bleServer);
 
   // Start advertising
   p_bleServer->startAdvertising();
@@ -265,7 +275,7 @@ void bleAddUARTService(BLEServer* pServer) {
   // UART TX
   p_bleUartTxCharacteristic = p_bleService->createCharacteristic(
                                 NORDIC_UART_CHAR_TX_UUID,
-                                BLECharacteristic::PROPERTY_NOTIFY
+                                BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ
                               );
   p_bleUartTxCharacteristic->addDescriptor(new BLE2902());
 
@@ -362,6 +372,24 @@ void bleAddPulseOximeterService(BLEServer* pServer) {
                                 );
   float f_initSpo2 = 0.0;
   p_blePulseOxiCharacteristic->setValue(f_initSpo2);
+
+  // start the service
+  p_bleService->start();
+}
+
+void bleAddThermometerService(BLEServer* pServer) {
+  // create a BLE service
+  BLEService* p_bleService = pServer->createService(THERMOMETER_SERVICE_UUID);
+  pServer->getAdvertising()->addServiceUUID(THERMOMETER_SERVICE_UUID);
+
+  // add Device Info service
+  p_bleTemperatureMeasCharacteristic = p_bleService->createCharacteristic(
+                                         TEMPERATURE_MEASUREMENT_CHAR_UUID,
+                                         BLECharacteristic::PROPERTY_READ |
+                                         BLECharacteristic::PROPERTY_NOTIFY
+                                       );
+  float f_initTemp = 0.0;
+  p_bleTemperatureMeasCharacteristic->setValue(f_initTemp);
 
   // start the service
   p_bleService->start();
@@ -473,7 +501,7 @@ uint8_t getRemainingBatCap(void) {
   return uc_batLvl;
 }
 
-void millis_to_hours(uint32_t un_ms, char* ps_hrStr)
+void millis_to_hours(uint32_t un_ms, char* ps_timeStr)
 {
   char s_iStr[6];
   uint32_t un_secs, un_mins, un_hrs;
@@ -482,13 +510,13 @@ void millis_to_hours(uint32_t un_ms, char* ps_hrStr)
   un_secs -= 60 * un_mins; // leftover seconds
   un_hrs = un_mins / 60; // time in hours
   un_mins -= 60 * un_hrs; // leftover minutes
-  itoa(un_hrs, ps_hrStr, 10);
-  strcat(ps_hrStr, ":");
+  itoa(un_hrs, ps_timeStr, 10);
+  strcat(ps_timeStr, ":");
   itoa(un_mins, s_iStr, 10);
-  strcat(ps_hrStr, s_iStr);
-  strcat(ps_hrStr, ":");
+  strcat(ps_timeStr, s_iStr);
+  strcat(ps_timeStr, ":");
   itoa(un_secs, s_iStr, 10);
-  strcat(ps_hrStr, s_iStr);
+  strcat(ps_timeStr, s_iStr);
 }
 
 
@@ -644,7 +672,7 @@ void setup() {
   dataFile.println(FW_VERSION);
   dataFile.print(F("Sensor state: "));
   dataFile.println(s_systemStatus);
-  dataFile.println(F("Time[s]\tSpO2\tHR\tClock\tRatio\tCorr\tTemp[C]\tVBat"));
+  dataFile.println(MEASUERMENT_DATA_HEADER);
 
 #if defined(SAVE_RAW_DATA)
   uint32_t un_iter;
@@ -674,7 +702,7 @@ void setup() {
 #endif
 
 #if defined(DEBUG)
-  Serial.println(F("Time[s]\tSpO2\tHR\tClock\tRatio\tCorr\tTemp[C]\tVBat"));
+  Serial.println(MEASUERMENT_DATA_HEADER);
 
 #if defined(DEBUG_INCL_RAW)
   // These are headers for the red signal
@@ -698,7 +726,7 @@ void setup() {
 // Continuously taking samples from MAX30102.
 // Heart rate and SpO2 are calculated every ST seconds
 void loop() {
-  char s_hrStr[10];
+  char s_timeStr[10];
   int8_t ch_spo2Valid;         //indicator to show if the SPO2 calculation is valid
   int8_t  ch_hrValid;          //indicator to show if the heart rate calculation is valid
   int32_t n_heartrate;         //heart rate value
@@ -732,18 +760,23 @@ void loop() {
   //calculate heart rate and SpO2 after BUFFER_SIZE samples (ST seconds of samples) using Robert's method
   rf_heart_rate_and_oxygen_saturation(aun_ir_buffer, BUFFER_SIZE, aun_red_buffer, &f_spo2, &ch_spo2Valid, &n_heartrate, &ch_hrValid, &f_ratio, &f_correl);
   un_elapsedTime_s = millis() - un_start_t_ms;
-  millis_to_hours(un_elapsedTime_s, s_hrStr); // Time in hh:mm:ss format
+  millis_to_hours(un_elapsedTime_s, s_timeStr); // Time in hh:mm:ss format
   un_elapsedTime_s /= 1000; // Time in seconds
 
   // Read the _chip_ temperature in degrees Celsius
   float f_temperature = oxi.readTemperature();
-  float f_voltBat = getBatVolt();
+  float f_batVolt = getBatVolt();
+  uint8_t uch_batCap = getRemainingBatCap();
 
   //save samples and calculation result to SD card
   if (ch_hrValid && ch_spo2Valid) {
 #if defined(BLE_COMM)
-    p_blePulseOxiCharacteristic->setValue(f_spo2);
     p_bleHeartRateCharacteristic->setValue(n_heartrate);
+    p_bleHeartRateCharacteristic->notify();
+    p_blePulseOxiCharacteristic->setValue(f_spo2);
+    p_blePulseOxiCharacteristic->notify();
+    p_bleTemperatureMeasCharacteristic->setValue(f_temperature);
+    p_bleTemperatureMeasCharacteristic->notify();
 #endif
 
 #if defined(SD_CARD_LOGGING)
@@ -754,15 +787,17 @@ void loop() {
     dataFile.print(F("\t"));
     dataFile.print(n_heartrate, DEC);
     dataFile.print(F("\t"));
-    dataFile.print(s_hrStr);
+    dataFile.print(f_temperature, 2);
+    dataFile.print(F("\t"));
+    dataFile.print(s_timeStr);
     dataFile.print(F("\t"));
     dataFile.print(f_ratio, 2);
     dataFile.print(F("\t"));
     dataFile.print(f_correl, 2);
     dataFile.print(F("\t"));
-    dataFile.print(f_temperature, 2);
+    dataFile.print(f_batVolt, 2);
     dataFile.print(F("\t"));
-    dataFile.println(f_voltBat, 2);
+    dataFile.println(uch_batCap, DEC);
 #if defined(SAVE_RAW_DATA)
     // Save raw data for unusual O2 levels
     for (un_iter = 0; un_iter < BUFFER_SIZE; ++un_iter)
@@ -792,15 +827,17 @@ void loop() {
     Serial.print(F("\t"));
     Serial.print(n_heartrate, DEC);
     Serial.print(F("\t"));
-    Serial.print(s_hrStr);
+    Serial.print(f_temperature, 2);
+    Serial.print(F("\t"));
+    Serial.print(s_timeStr);
     Serial.print(F("\t"));
     Serial.print(f_ratio, 2);
     Serial.print(F("\t"));
     Serial.print(f_correl, 2);
     Serial.print(F("\t"));
-    Serial.print(f_temperature, 2);
+    Serial.print(f_batVolt, 2);
     Serial.print(F("\t"));
-    Serial.println(f_voltBat, 2);
+    Serial.println(uch_batCap, DEC);
 
 #if defined(DEBUG_INCL_RAW)
     // Save raw data for unusual O2 levels

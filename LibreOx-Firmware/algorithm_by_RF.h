@@ -50,7 +50,7 @@
 const float sum_X2 = 83325; // WARNING: you MUST recalculate this sum if you changed either ST_S or FS_HZ above!
 // WARNING: The two parameters below are CRUCIAL! Proper HR evaluation depends on these.
 #define MAX_HR 200  // Maximal heart rate. To eliminate erroneous signals, calculated HR should never be greater than this number.
-#define MIN_HR 30   // Minimal heart rate. To eliminate erroneous signals, calculated HR should never be lower than this number.
+#define MIN_HR 35   // Minimal heart rate. To eliminate erroneous signals, calculated HR should never be lower than this number.
 // Minimal ratio of two autocorrelation sequence elements: one at a considered lag to the one at lag 0.
 // Good quality signals must have such ratio greater than this minimum.
 const float min_autocorrelation_ratio = 0.5;
